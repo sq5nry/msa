@@ -1,0 +1,5 @@
+Name=Ideal 50 ohms
+Description=50 ohms, good for cal plane on back of SMA connectors
+Open=RLC[S, C0, D0]
+Short=RLC[P, R0, L0, D0]
+Load=RLC[P,R50, C0]

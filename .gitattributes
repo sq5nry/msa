@@ -1,0 +1,10 @@
+# Normal text: LF in the repository, native line ends in checkouts
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Files from the MSA_Info folder must stay byte-identical: the BASIC program writes CR-only lines
+# inside a context and CR LF after "EndContext", and the tests check the round trip byte for byte.
+**/src/test/resources/** -text
+msa-info/** -text
+*.hex -text

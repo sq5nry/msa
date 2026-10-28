@@ -1,0 +1,25 @@
+# build output
+target/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+out/
+
+# local, not source
+*.dll
+*.so
+*.dylib
+vnalog*.txt
+*.log
+/recordings/
+
+# GUI state between runs and Save Prefs backups (msa-info itself is committed)
+msa-info/MSA_Prefs/java-session.properties
+msa-info/MSA_Prefs/*.tmp
+msa-info/MSA_Prefs/*.bak
+
+# Maven downloaded by packaging/windows/build-windows.ps1
+/.tools/

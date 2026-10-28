@@ -1,18 +1,130 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.sq5nry</groupId>
-    <artifactId>msa</artifactId>
-    <version>1.0-SNAPSHOT</version>
+  <groupId>msa</groupId>
+  <artifactId>msa-java</artifactId>
+  <version>0.2.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>MSA Java port</name>
+  <description>Modular Spectrum Analyzer control software, ported from spectrumanalyzer.bas (Liberty BASIC)</description>
 
+  <!--
+    Module layering (dependencies only point downwards):
+      msa-gui, msa-gui-spike, msa-tools  ->  msa-core  ->  msa-hw
+    msa-hw    USB / libusb, wire protocol, firmware loader, simulator      (no other msa module)
+    msa-core  config, calibration, synthesiser planning, sweep engine, settings, trace processing, record/replay
+    msa-tools command-line tools (msa-probe), runnable jar
+    msa-gui        JavaFX spectrum analyser window (SA and SA with TG modes)
+    msa-gui-spike  JavaFX vs Swing drawing trial; not part of the product
+  -->
+  <modules>
+    <module>msa-hw</module>
+    <module>msa-core</module>
+    <module>msa-tools</module>
+    <module>msa-gui</module>
+    <module>msa-gui-spike</module>
+  </modules>
+
+  <properties>
+    <!-- FFM (java.lang.foreign) is final since JDK 22; 25 is the current LTS. -->
+    <maven.compiler.release>25</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <junit.version>5.11.4</junit.version>
+    <javafx.version>21.0.5</javafx.version>
+  </properties>
+
+  <dependencyManagement>
     <dependencies>
-        <dependency>
-            <groupId>net.java.dev.jna</groupId>
-            <artifactId>jna-platform</artifactId>
-            <version>5.5.0</version>
-        </dependency>
+      <dependency>
+        <groupId>msa</groupId>
+        <artifactId>msa-hw</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>msa</groupId>
+        <artifactId>msa-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>msa</groupId>
+        <artifactId>msa-tools</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.openjfx</groupId>
+        <artifactId>javafx-controls</artifactId>
+        <version>${javafx.version}</version>
+      </dependency>
     </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+          <configuration>
+            <compilerArgs>
+              <arg>-Xlint:all,-restricted,-serial</arg>
+            </compilerArgs>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.2</version>
+          <configuration>
+            <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-jar-plugin</artifactId>
+          <version>3.4.2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+    <plugins>
+      <!-- Fail early with a clear message when Maven runs on an older JDK (JAVA_HOME): the code uses
+           release 25 and javac options that older compilers reject ("invalid flag: -Xlint:...restricted"). -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-enforcer-plugin</artifactId>
+        <version>3.5.0</version>
+        <executions>
+          <execution>
+            <id>require-jdk-25</id>
+            <goals><goal>enforce</goal></goals>
+            <configuration>
+              <rules>
+                <requireJavaVersion>
+                  <version>[25,)</version>
+                  <message>This project needs JDK 25 or newer, but Maven runs on ${java.version} (${java.home}). Set JAVA_HOME to a JDK 25 (or run packaging\windows\build-windows.cmd, which looks for one).</message>
+                </requireJavaVersion>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>
