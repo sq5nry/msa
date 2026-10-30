@@ -32,7 +32,8 @@ class TraceTest {
         assertEquals(Math.sqrt(0.05), GraphData.VOLTS.fromDbm(0), 1e-12);   // 1 mW into 50 ohm = 0.2236 V
         assertEquals(0, GraphData.NONE.fromDbm(-30));
         assertEquals(GraphData.DBM, GraphData.ofCode(17));
-        assertEquals(GraphData.NONE, GraphData.ofCode(1));                  // VNA type, not ported
+        assertEquals(GraphData.S11_DB, GraphData.ofCode(1));
+        assertEquals(GraphData.NONE, GraphData.ofCode(34));                 // auxiliary data, not ported
         assertTrue(Double.isNaN(GraphData.WATTS.fromDbm(Double.NaN)));
     }
 

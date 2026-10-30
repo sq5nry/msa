@@ -19,11 +19,16 @@ public final class Fmt {
     public static String value(GraphData g, double v) {
         if (Double.isNaN(v)) return "-";
         return switch (g) {
-            case DBM, DB, INSERTION_LOSS -> String.format(Locale.ROOT, "%.3f", v);
-            case ANGLE, RAW_ANGLE -> String.format(Locale.ROOT, "%.2f", v);
+            case DBM, DB, INSERTION_LOSS, S11_DB, RETURN_LOSS, RHO -> String.format(Locale.ROOT, "%.3f", v);
+            case ANGLE, RAW_ANGLE, S11_ANGLE, THETA, Z_ANGLE, ADMIT_ANGLE, SWR, REFLECT_POWER -> String.format(Locale.ROOT, "%.2f", v);
+            case COMPONENT_Q -> String.format(Locale.ROOT, "%.1f", v);
             case WATTS, VOLTS -> withPrefix(v, 4) + g.unit;
             case RATIO -> withPrefix(v, 4).strip();
             case GROUP_DELAY -> withPrefix(v, 4) + "s";
+            case Z_MAG, RS, XS, RP, XP -> withPrefix(v, 4) + "\u03A9";
+            case CS, CP -> withPrefix(v, 4) + "F";
+            case LS, LP -> withPrefix(v, 4) + "H";
+            case ADMIT_MAG, CONDUCTANCE, SUSCEPTANCE -> withPrefix(v, 4) + "S";
             case NONE -> "";
         };
     }
@@ -31,7 +36,8 @@ public final class Fmt {
     /** Axis label: as short as the division step allows. */
     public static String axis(GraphData g, double v, double step) {
         switch (g) {
-            case DBM, DB, INSERTION_LOSS, ANGLE, RAW_ANGLE -> {
+            case DBM, DB, INSERTION_LOSS, ANGLE, RAW_ANGLE, S11_DB, RETURN_LOSS, S11_ANGLE, THETA, Z_ANGLE, ADMIT_ANGLE,
+                 SWR, REFLECT_POWER, COMPONENT_Q -> {
                 int dec = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
                 return String.format(Locale.ROOT, "%." + dec + "f", v);
             }

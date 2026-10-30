@@ -74,7 +74,8 @@ public final class MainWindow implements GraphView.Actions {
     private final Button restartBtn = new Button("Running"), continueBtn = new Button("Halt"),
             oneStepBtn = new Button("HaltAtEnd"), stepLeftBtn = new Button("Step Left"), redrawBtn = new Button("Redraw");
     private final RadioMenuItem modeSa = new RadioMenuItem("Spectrum Analyzer"),
-            modeSaTg = new RadioMenuItem("Spectrum Analyzer with TG"), modeTrans = new RadioMenuItem("VNA Transmission");
+            modeSaTg = new RadioMenuItem("Spectrum Analyzer with TG"), modeTrans = new RadioMenuItem("VNA Transmission"),
+            modeRefl = new RadioMenuItem(MsaMode.REFLECTION.title);
     private final RadioMenuItem refBand = new RadioMenuItem(TransmissionCal.Level.BAND.title),
             refBase = new RadioMenuItem(TransmissionCal.Level.BASE.title), refNone = new RadioMenuItem(TransmissionCal.Level.NONE.title);
     private final Menu calMenu = new Menu("Operating Cal");
@@ -269,12 +270,11 @@ public final class MainWindow implements GraphView.Actions {
         data.setOnShowing(e -> s21.setDisable(!session.mode().transmission()));
 
         MenuBar bar = new MenuBar(file, edit, options, data);
-        if (session.hasVna()) {
-            Menu setup = new Menu("Setup", null, item("PDM Calibration...", e -> openPdmCalibration()));
-            bar.getMenus().add(2, setup);
-        }
+        Menu setup = new Menu("Setup", null, item("Autotest...", e -> openAutotest()));
+        if (session.hasVna()) setup.getItems().add(item("PDM Calibration...", e -> openPdmCalibration()));
+        bar.getMenus().add(2, setup);
         if (session.hasTrackingGenerator()) {
-            // Operating Cal: transmission reference (reflection is not ported yet)
+            // Operating Cal: transmission reference, or reflection OSL calibration
             MenuItem perform = item("Perform Cal...", e -> openTransmissionCal(false));
             MenuItem update = item("Update Cal...", e -> openTransmissionCal(true));
             ToggleGroup rg = new ToggleGroup();
@@ -285,7 +285,7 @@ public final class MainWindow implements GraphView.Actions {
             Menu refTo = new Menu("Reference To", null, refBand, refBase, refNone);
             calMenu.getItems().addAll(perform, refTo, update);
             calMenu.setOnShowing(e -> {
-                boolean trans = session.mode().transmission();
+                boolean trans = session.mode().networkAnalyser();
                 for (MenuItem m : List.of(perform, refTo, update)) m.setDisable(!trans);
                 syncReferenceMenu();
             });
@@ -295,22 +295,32 @@ public final class MainWindow implements GraphView.Actions {
             modeSa.setToggleGroup(g);
             modeSaTg.setToggleGroup(g);
             modeTrans.setToggleGroup(g);
+            modeRefl.setToggleGroup(g);
             modeTrans.setText(session.transmissionMode().title);
             modeSa.setOnAction(e -> changeMode(MsaMode.SA, false));
             modeSaTg.setOnAction(e -> changeMode(MsaMode.SA, true));
             modeTrans.setOnAction(e -> changeMode(session.transmissionMode(), true));
+            modeRefl.setOnAction(e -> changeMode(MsaMode.REFLECTION, true));
             Menu mode = new Menu("Mode", null, modeSa, modeSaTg, modeTrans);
+            if (session.hasVna()) mode.getItems().add(modeRefl);
             if (session.source() instanceof Session.Demo) {
-                ToggleGroup dg = new ToggleGroup();
                 Menu dut = new Menu("Demo Test Fixture");
-                for (Session.DemoDut d : Session.DemoDut.values()) {
-                    RadioMenuItem r = new RadioMenuItem(d.title);
-                    r.setToggleGroup(dg);
-                    r.setSelected(d == session.demoDut());
-                    r.setOnAction(e -> session.setDemoDut(d));
-                    dut.getItems().add(r);
-                }
                 mode.getItems().addAll(new SeparatorMenuItem(), dut);
+                mode.setOnShowing(e -> {
+                    // what the simulated fixture can hold depends on the mode: two-ports or one-ports
+                    dut.getItems().clear();
+                    ToggleGroup dg = new ToggleGroup();
+                    boolean refl = session.mode() == MsaMode.REFLECTION;
+                    for (msa.replay.DemoSignals.Dut d : msa.replay.DemoSignals.Dut.values()) {
+                        if (d.onePort != refl) continue;
+                        RadioMenuItem r = new RadioMenuItem(d.title);
+                        r.setToggleGroup(dg);
+                        r.setSelected(d == session.demoDut());
+                        r.setOnAction(ev -> session.setDemoDut(d));
+                        dut.getItems().add(r);
+                    }
+                    dut.setDisable(session.mode() == MsaMode.SA);
+                });
             }
             bar.getMenus().add(mode);
             syncModeMenu();
@@ -330,7 +340,7 @@ public final class MainWindow implements GraphView.Actions {
     private void setReference(TransmissionCal.Level l) {
         session.setCalLevel(l);
         calibrationChanged();
-        TransmissionCal.Level applied = session.installedCal(session.sweep()).level();
+        TransmissionCal.Level applied = session.appliedCalLevel(session.sweep());
         message(applied == l ? "Reference: " + l.title
                 : "Reference: " + l.title + " wanted, but " + (applied == TransmissionCal.Level.NONE ? "none" : applied.title)
                 + " applies (" + (l == TransmissionCal.Level.BAND ? "no band calibration for this sweep" : "no base calibration for this path") + ")");
@@ -345,8 +355,22 @@ public final class MainWindow implements GraphView.Actions {
     }
 
     void openTransmissionCal(boolean update) {
+        if (session.mode() == MsaMode.REFLECTION) {
+            if (update) {
+                msa.vna.OslCal band = session.reflectionCal().band();
+                if (session.vna().calLevel() != TransmissionCal.Level.BAND || band == null || !band.matches(session.sweep())) {
+                    info("Update Cal", "Must have current band calibration to update. Cannot update base cal.");
+                    return;
+                }
+            }
+            new ReflectionCalDialog(stage, session, state.store, new ReflectionCalDialog.Host() {
+                @Override public void calibrationChanged() { MainWindow.this.calibrationChanged(); }
+                @Override public void message(String text) { MainWindow.this.message(text); }
+            }, update).show();
+            return;
+        }
         if (!session.mode().transmission()) {
-            info("Operating Cal", "Calibration is for the transmission mode (reflection is not ported yet).");
+            info("Operating Cal", "Calibration is for the network-analyser modes.");
             return;
         }
         if (update) {
@@ -360,6 +384,49 @@ public final class MainWindow implements GraphView.Actions {
             @Override public void calibrationChanged() { MainWindow.this.calibrationChanged(); }
             @Override public void message(String text) { MainWindow.this.message(text); }
         }, update).show();
+    }
+
+    void openAutotest() {
+        new AutotestWindow(stage, session, new AutotestWindow.Host() {
+            private java.util.Map<Markers.Id, Double> markers;
+            private msa.replay.DemoSignals.Dut dut;
+            private boolean wasHalted;
+
+            @Override
+            public void runStarting() {
+                markers = state.markerFrequencies();
+                wasHalted = engineState == SweepEngine.State.HALTED;
+                dut = session.demoDut();
+                // the demo's TG tests expect a cable from TG to input
+                if (session.source() instanceof Session.Demo) session.setDemoDut(msa.replay.DemoSignals.Dut.THROUGH);
+                message("Autotest running: the graph shows the test sweeps");
+            }
+
+            @Override
+            public void runFinished() {
+                if (dut != null) session.setDemoDut(dut);
+                session.engine().apply(session.sweep());
+                restart();
+                // the tests replaced the halted trace: sweep once with the user's settings, then halt again
+                if (wasHalted) session.engine().haltAtEnd();
+                if (markers != null) state.restoreMarkers(markers);
+                markersChanged();
+                graph.invalidate();
+                message(wasHalted ? "Autotest finished: your sweep is restored; it halts after one sweep, as before"
+                        : "Autotest finished: your sweep is restored");
+            }
+
+            @Override
+            public void message(String text) { MainWindow.this.message(text); }
+
+            @Override
+            public void wiring(msa.autotest.AutotestModel.Setup s) {
+                // the demo's simulated cable goes where the prompt said
+                if (session.source() instanceof Session.Demo)
+                    session.setDemoDut(s == msa.autotest.AutotestModel.Setup.TG_REFLECT
+                            ? msa.replay.DemoSignals.Dut.THROUGH_R : msa.replay.DemoSignals.Dut.THROUGH);
+            }
+        }).show();
     }
 
     void openPdmCalibration() {
@@ -786,10 +853,11 @@ public final class MainWindow implements GraphView.Actions {
         if (sweepPanel != null) sweepPanel.refresh();
         stepWarning();
         graph.invalidate();
-        if (changed && mode.transmission()) {
-            TransmissionCal.Level applied = session.installedCal(session.sweep()).level();
+        if (changed && mode.networkAnalyser()) {
+            TransmissionCal.Level applied = session.appliedCalLevel(session.sweep());
             message(mode.title + ": reference " + (applied == TransmissionCal.Level.NONE
-                    ? "none (Operating Cal > Perform Cal with a through connection)" : applied.title));
+                    ? "none (Operating Cal > Perform Cal with " + (mode == MsaMode.REFLECTION ? "the calibration standards)"
+                    : "a through connection)") : applied.title));
         }
     }
 
@@ -861,10 +929,13 @@ public final class MainWindow implements GraphView.Actions {
                 header.add(String.format(Locale.ROOT, "Path %d, RBW %s kHz, Video %s, Wait %d ms, Steps %d, Samples %d",
                         s.path(), session.config().filter(s.path()).bwKHz(),
                         msa.model.MsaSettings.videoName(s.video(), session.config()), s.waitMs(), s.steps(), s.samples()));
-                if (s.mode().transmission()) {
-                    TransmissionCal.Installed cal = session.installedCal(s);
-                    header.add("Reference: " + (cal.level() == TransmissionCal.Level.NONE ? "none" : cal.level().title)
+                if (s.mode().networkAnalyser()) {
+                    TransmissionCal.Level cal = session.appliedCalLevel(s);
+                    header.add("Reference: " + (cal == TransmissionCal.Level.NONE ? "none" : cal.title)
                             + (s.mode().readsPhase() ? ", plane extension " + session.vna().planeExtNs() + " ns" : ""));
+                    if (s.mode() == MsaMode.REFLECTION)
+                        header.add(session.vna().reflectFixture().title + " R0 " + session.vna().s11BridgeR0()
+                                + " ohms; graph R0 " + session.vna().s11GraphR0() + " ohms");
                 }
                 DataFile.write(p, d, header, s.mode());
                 message("Saved " + p);
@@ -953,7 +1024,8 @@ public final class MainWindow implements GraphView.Actions {
 
     private void syncModeMenu() {
         if (session.hasTrackingGenerator()) {
-            if (session.mode() != MsaMode.SA) modeTrans.setSelected(true);
+            if (session.mode() == MsaMode.REFLECTION) modeRefl.setSelected(true);
+            else if (session.mode() != MsaMode.SA) modeTrans.setSelected(true);
             else (session.trackingMode() ? modeSaTg : modeSa).setSelected(true);
         }
         stage.setTitle(title());

@@ -1,0 +1,5 @@
+Name=Kit with 48.68 ohm load
+Description=Ideal open and short; the load measures 48.68 ohms
+Open=RLC[S, C0, D0]
+Short=RLC[P, R0, L0, D0]
+Load=RLC[P, R48.68, C0]

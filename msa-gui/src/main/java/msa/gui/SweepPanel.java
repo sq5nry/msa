@@ -64,17 +64,18 @@ public final class SweepPanel extends VBox {
     private final Host host;
     private final RadioButton centSpan = new RadioButton(), startStop = new RadioButton();
     private final TextField cent = field(8), span = field(8), start = field(8), stop = field(8);
-    private final TextField steps = field(5), waitMs = field(4), samples = field(3), genFreq = field(6);
+    private final TextField steps = field(5), waitMs = field(4), samples = field(3), genFreq = field(6), graphR0 = field(5);
     private final CheckBox autoSteps = new CheckBox("Auto"), autoWait = new CheckBox("Auto"), autoSamples = new CheckBox("Auto");
     private final ComboBox<String> pathBox = new ComboBox<>(), videoBox = new ComboBox<>(), bandBox = new ComboBox<>(),
             scaleBox = new ComboBox<>(), dirBox = new ComboBox<>();
     private final ComboBox<Integer> divBox = new ComboBox<>();
     private final ToggleButton sgMode = new ToggleButton("SA"), tgMode = new ToggleButton("SA with TG"),
-            vnaMode = new ToggleButton("VNA Trans");
+            vnaMode = new ToggleButton("VNA Trans"), reflMode = new ToggleButton("VNA Refl");
     private final ToggleButton normRev = new ToggleButton("Normal");
     private final Label genLabel = lbl(""), genUnit = lbl("MHz");
     private final HBox revBox = new HBox(6);
     private final HBox genRow = row(genLabel, genFreq, genUnit);
+    private final HBox r0Row = row(lbl("R0"), graphR0, lbl("ohms"));
     private boolean updating;
 
     public SweepPanel(Session session, Host host) {
@@ -142,6 +143,11 @@ public final class SweepPanel extends VBox {
             sgMode.setOnAction(e -> modeClicked(MsaMode.SA, false));
             tgMode.setOnAction(e -> modeClicked(MsaMode.SA, true));
             vnaMode.setOnAction(e -> modeClicked(trans, true));
+            reflMode.setToggleGroup(g);
+            reflMode.setTooltip(new Tooltip("VNA Reflection: S11 of the device on the bridge (or fixture), calibrated with"
+                    + " Open, Short and Load standards; impedance, SWR, return loss"));
+            reflMode.setOnAction(e -> modeClicked(MsaMode.REFLECTION, true));
+            graphR0.setTooltip(new Tooltip("Reference impedance of the reflection graphs (S11, SWR, return loss)"));
             normRev.setOnAction(e -> {
                 normRev.setText(normRev.isSelected() ? "Reverse" : "Normal");
                 applyNow();
@@ -149,13 +155,15 @@ public final class SweepPanel extends VBox {
             normRev.setTooltip(new Tooltip("Normal: TG at the analyser frequency + offset. Reverse: the TG sweeps the other way."));
             revBox.getChildren().addAll(lbl("TG"), normRev);
             revBox.setAlignment(Pos.CENTER_LEFT);
-            VBox gen = new VBox(3, new HBox(0, sgMode, tgMode, vnaMode), genRow, revBox);
+            HBox modes = new HBox(0, sgMode, tgMode, vnaMode);
+            if (session.hasVna()) modes.getChildren().add(reflMode);
+            VBox gen = new VBox(3, modes, genRow, revBox, r0Row);
             top.getChildren().add(gen);
         }
         getChildren().add(top);
 
         // ---- behaviour
-        for (TextField t : List.of(cent, span, start, stop, steps, waitMs, samples, genFreq)) {
+        for (TextField t : List.of(cent, span, start, stop, steps, waitMs, samples, genFreq, graphR0)) {
             t.setOnAction(e -> applyNow());
             t.focusedProperty().addListener((o, was, is) -> {
                 if (is) return;
@@ -168,7 +176,7 @@ public final class SweepPanel extends VBox {
             c.setOnAction(e -> { if (!updating) applyNow(); });
             c.setMinWidth(Region.USE_PREF_SIZE);
         }
-        for (javafx.scene.control.Control c : List.of(autoSteps, autoWait, autoSamples, sgMode, tgMode, vnaMode, normRev, centSpan, startStop))
+        for (javafx.scene.control.Control c : List.of(autoSteps, autoWait, autoSamples, sgMode, tgMode, vnaMode, reflMode, normRev, centSpan, startStop))
             c.setMinWidth(Region.USE_PREF_SIZE);
         setMinWidth(Region.USE_PREF_SIZE);
         autoSamples.setOnAction(e -> {
@@ -231,14 +239,15 @@ public final class SweepPanel extends VBox {
             dirBox.getSelectionModel().select(s.direction().ordinal());
             divBox.setValue(d.gridDivX());
             divBox.setDisable(s.scale() == SweepSettings.Scale.LOG);
+            set(graphR0, plain(session.vna().s11GraphR0()));
             if (s.mode().networkAnalyser()) {
-                vnaMode.setSelected(true);
+                (s.mode() == MsaMode.REFLECTION ? reflMode : vnaMode).setSelected(true);
                 genLabel.setText("Plane Ext");
                 genUnit.setText("ns");
                 set(genFreq, plain(session.vna().planeExtNs()));
                 genFreq.setTooltip(new Tooltip("Reference plane extension: phase advanced by 360 degrees x frequency x delay"));
                 genRow.setVisible(s.mode().readsPhase());
-                revBox.setVisible(false);
+                show(revBox, false);
             } else {
                 genUnit.setText("MHz");
                 genFreq.setTooltip(null);
@@ -250,20 +259,28 @@ public final class SweepPanel extends VBox {
                         set(genFreq, plain(t.offsetMHz()));
                         normRev.setSelected(t.reverse());
                         normRev.setText(t.reverse() ? "Reverse" : "Normal");
-                        revBox.setVisible(true);
+                        show(revBox, true);
                     }
                     case SynthPlanner.SignalGen g -> {
                         sgMode.setSelected(true);
                         genLabel.setText("Sig Gen Freq");
                         set(genFreq, plain(g.sgoutMHz()));
-                        revBox.setVisible(false);
+                        show(revBox, false);
                     }
                 }
             }
+            // one row under the generator line: TG normal/reverse, or the reflection R0 (same height in every mode)
+            r0Row.setVisible(s.mode() == MsaMode.REFLECTION);
+            r0Row.setManaged(!revBox.isManaged());
             enableFreqFields();
         } finally {
             updating = false;
         }
+    }
+
+    private static void show(javafx.scene.Node n, boolean v) {
+        n.setVisible(v);
+        n.setManaged(v);
     }
 
     /** "Options > Sweep Parameters" or a double-click on the frequency axis: put the cursor in the first box. */
@@ -298,10 +315,16 @@ public final class SweepPanel extends VBox {
                 extChanged = ext != session.vna().planeExtNs();
                 session.setPlaneExt(ext);
             }
+            if (old.mode() == MsaMode.REFLECTION) {
+                double z0 = SweepForm.number("R0", graphR0.getText());
+                if (!(z0 > 0)) throw new IllegalArgumentException("R0: must be above 0 ohms");
+                if (z0 != session.vna().s11GraphR0()) extChanged = true;
+                session.setGraphR0(z0);
+            }
             session.applyDisplay(r.display());
             session.applySweep(r.sweep());
             if (extChanged) host.correctionChanged();
-            for (TextField t : List.of(cent, span, start, stop, steps, waitMs, samples, genFreq)) t.setStyle("");
+            for (TextField t : List.of(cent, span, start, stop, steps, waitMs, samples, genFreq, graphR0)) t.setStyle("");
             refresh();
             if (AutoSteps.aboveRecommended(session.sweep().steps()))
                 host.message(session.sweep().steps() + " steps: more than " + AutoSteps.RECOMMENDED_MAX + ", sweeps will be slow");
@@ -322,6 +345,7 @@ public final class SweepPanel extends VBox {
             case "Steps", "Steps/Sweep" -> steps;
             case "Wait" -> waitMs;
             case "Samples" -> samples;
+            case "R0" -> graphR0;
             default -> genFreq;                                    // generator frequency or plane extension
         };
         t.setStyle(BAD);

@@ -4,22 +4,19 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
-import java.util.Random;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import msa.config.MsaConfig;
 import msa.config.PathCalibration;
 import msa.hw.UsbMsa;
-import msa.hw.sim.SimulatedTransport;
 import msa.hw.usb.LibUsbTransport;
 import msa.model.DisplaySettings;
 import msa.model.MsaSettings;
+import msa.replay.DemoSignals;
 import msa.replay.ReplayTransport;
 import msa.sweep.AutoSamples;
 import msa.sweep.AutoSteps;
@@ -65,7 +62,8 @@ public final class Session implements AutoCloseable {
     private MsaSettings.Loaded baseline;
     private volatile MsaSettings settings;
     private final TransmissionCal transmissionCal;
-    private volatile DemoDut demoDut = DemoDut.BANDPASS;
+    private final msa.vna.ReflectionCal reflectionCal;
+    private volatile DemoSignals.Dut demoDut = DemoSignals.Dut.BANDPASS;
     private double sgoutMHz = 10;
     private double tgOffsetMHz = 0;
     private boolean tgReverse = false;
@@ -97,6 +95,8 @@ public final class Session implements AutoCloseable {
         }
         this.transmissionCal = new TransmissionCal(msaInfo.resolve("OperatingCal"));
         if (transmissionCal.loadProblem() != null) warnings.add(transmissionCal.loadProblem());
+        this.reflectionCal = new msa.vna.ReflectionCal(msaInfo.resolve("OperatingCal"));
+        if (reflectionCal.loadProblem() != null) warnings.add(reflectionCal.loadProblem());
         this.engine = new SweepEngine(cfg, this::loadCalibration, deviceFactory());
     }
 
@@ -106,7 +106,8 @@ public final class Session implements AutoCloseable {
                 return switch (source) {
                     case Usb u -> new UsbMsa(LibUsbTransport.open());
                     case Replay r -> new UsbMsa(ReplayTransport.open(r.file(), cfg));
-                    case Demo d -> new UsbMsa(demo(cfg, () -> sweep().mode(), () -> demoDut, this::demoCalibration));
+                    case Demo d -> new UsbMsa(msa.replay.DemoSignals.create(cfg, this::sweepingMode, () -> demoDut,
+                            this::demoCalibration));
                 };
             } catch (IOException e) {
                 throw new msa.hw.MsaException(source.label() + ": " + e.getMessage(), e);
@@ -120,6 +121,12 @@ public final class Session implements AutoCloseable {
     }
 
     private final Map<Integer, java.util.Optional<PathCalibration>> demoCals = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The mode of the sweep the engine runs (an autotest sweeps with its own settings), for the demo signal. */
+    private MsaMode sweepingMode() {
+        SweepSettings s = engine == null ? null : engine.settings();
+        return s != null ? s.mode() : sweep().mode();
+    }
 
     /** The demo turns levels into ADC readings through the real path calibration, so they read back right. */
     private PathCalibration demoCalibration(int path) {
@@ -272,6 +279,8 @@ public final class Session implements AutoCloseable {
                 .withY2Axis(new DisplaySettings.AxisRange(-100, 0)).withAutoscale(false, false)
                 .withTraceModes(def.y1Mode(), def.y2Mode());
         settings = settings.withDisplay(d);
+        if (source instanceof Demo && mode.networkAnalyser() && demoDut.onePort != (mode == MsaMode.REFLECTION))
+            demoDut = mode == MsaMode.REFLECTION ? DemoSignals.Dut.SERIES_RLC : DemoSignals.Dut.BANDPASS;
         applySweep(sweep().withGenerator(g).withMode(mode));
         engine.restart();
         return changed;
@@ -312,13 +321,93 @@ public final class Session implements AutoCloseable {
         return lastInstalled;
     }
 
-    /** Reference and plane extension for a sweep's data (no correction outside transmission). */
+    /** Reference and plane extension for a sweep's data; in reflection also the OSL calibration and R0s. */
     public SweepData.Correction correctionFor(SweepSettings s) {
+        if (s.mode() == MsaMode.REFLECTION) {
+            VnaSettings v = vna();
+            msa.vna.ReflectionCal.Installed in = installedReflectionCal(s);
+            boolean extend = v.reflectFixture() != msa.vna.OslCal.Fixture.SERIES;
+            return new SweepData.Correction(null, null, v.planeExtNs(),
+                    new SweepData.Reflection(in.points(), v.s11BridgeR0(), v.s11GraphR0(), extend));
+        }
         if (!s.mode().transmission()) return SweepData.Correction.NONE;
         TransmissionCal.Installed in = installedCal(s);
         boolean vector = s.mode() == MsaMode.VECTOR_TRANS;
         return new SweepData.Correction(in.db(), vector ? in.deg() : null, vector ? vna().planeExtNs() : 0);
     }
+
+    // ---------------------------------------------------------------- reflection
+
+    /** The band and base reflection (OSL) calibrations. */
+    public msa.vna.ReflectionCal reflectionCal() { return reflectionCal; }
+
+    private record ReflKey(SweepSettings s, VnaSettings v, msa.vna.OslCal band, msa.vna.OslCal base) {}
+    private ReflKey lastReflKey;
+    private msa.vna.ReflectionCal.Installed lastReflInstalled;
+
+    /** What OSL calibration applies to a sweep with these settings (InstallSelectedOSLCal). */
+    public synchronized msa.vna.ReflectionCal.Installed installedReflectionCal(SweepSettings s) {
+        if (s.mode() != MsaMode.REFLECTION) return msa.vna.ReflectionCal.Installed.NONE;
+        VnaSettings v = vna();
+        ReflKey k = new ReflKey(s, v, reflectionCal.band(), reflectionCal.base());
+        if (!k.equals(lastReflKey)) {
+            lastReflInstalled = reflectionCal.install(v.calLevel(), s, v.reflectFixture(), v.s11BridgeR0(), s.frequencies());
+            lastReflKey = k;
+        }
+        return lastReflInstalled;
+    }
+
+    /** The level of the calibration that applies in the current mode (none outside the network-analyser modes). */
+    public TransmissionCal.Level appliedCalLevel(SweepSettings s) {
+        if (s.mode() == MsaMode.REFLECTION) return installedReflectionCal(s).level();
+        return installedCal(s).level();
+    }
+
+    /** Sweep window R0 for the reflection graphs. */
+    public void setGraphR0(double r0) {
+        if (!(r0 > 0)) throw new IllegalArgumentException("R0: must be above 0 ohms");
+        settings = settings.withVna(vna().withGraphR0(r0));
+    }
+
+    /**
+     * [OSLDone] / [ProcessOSLBandCal]: the measured standards become the band OSL calibration of this sweep,
+     * the fixture and R0 are remembered, and Reference To becomes "Band Sweep Cal".
+     *
+     * @param open  raw readings with the open attached, or null; likewise short and load
+     * @throws IllegalArgumentException as {@link msa.vna.OslCal#compute}
+     */
+    public msa.vna.OslCal performOslCal(SweepSettings s, double[] freq, msa.vna.OslCal.Reading open,
+                                        msa.vna.OslCal.Reading shortR, msa.vna.OslCal.Reading load,
+                                        msa.vna.CalStandards stds, msa.vna.OslCal.Fixture fixture, double r0,
+                                        double shuntDelayNs) {
+        msa.vna.OslCal c = msa.vna.OslCal.compute(freq, open, shortR, load, stds, fixture, r0, shuntDelayNs,
+                s.scale() == SweepSettings.Scale.LINEAR, s.path());
+        settings = settings.withVna(vna().withReflectFixture(fixture, r0, shuntDelayNs));
+        reflectionCal.setBand(c);
+        setCalLevel(TransmissionCal.Level.BAND);
+        return c;
+    }
+
+    /**
+     * [PerformOSLCalUpdate]: the reference standard measured again replaces the band calibration's reference
+     * (the error coefficients stay), partly correcting drift since the calibration.
+     */
+    public msa.vna.OslCal updateOslReference(msa.vna.OslCal.Reading again) {
+        msa.vna.OslCal b = reflectionCal.band();
+        if (b == null) throw new IllegalStateException("no band calibration");
+        msa.vna.OslCal u = new msa.vna.OslCal(b.freq(), again.db(), again.deg(), b.a(), b.b(), b.c(), b.refType(),
+                b.timeStamp(), b.linear(), b.path(), b.fixture(), b.r0(), b.shuntDelayNs());
+        reflectionCal.setBand(u);
+        return u;
+    }
+
+    /** The calibration standard sets in MSA_Info/OperatingCal/CalSets. */
+    public java.util.List<msa.vna.CalStandards> calStandards() {
+        return msa.vna.CalStandards.list(msaInfo.resolve("OperatingCal").resolve(msa.vna.CalStandards.FOLDER));
+    }
+
+    /** Where a new calibration standard set is saved. */
+    public Path calSetsFolder() { return msaInfo.resolve("OperatingCal").resolve(msa.vna.CalStandards.FOLDER); }
 
     /**
      * [BandLineCal]: a complete sweep taken with the through connected becomes the band calibration, and
@@ -360,17 +449,9 @@ public final class Session implements AutoCloseable {
         return java.math.BigDecimal.valueOf(v).setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
-    /** What the demo source's simulated test fixture holds in the transmission modes. */
-    public enum DemoDut {
-        THROUGH("Through"), BANDPASS("Band-pass (series RLC, 200 MHz)"), LOWPASS("Low-pass (shunt 30 pF)");
-
-        public final String title;
-
-        DemoDut(String title) { this.title = title; }
-    }
-
-    public DemoDut demoDut() { return demoDut; }
-    public void setDemoDut(DemoDut d) { demoDut = d; }
+    /** What the demo's simulated test fixture holds in the transmission modes. */
+    public DemoSignals.Dut demoDut() { return demoDut; }
+    public void setDemoDut(DemoSignals.Dut d) { demoDut = d; }
 
     /** Saves to MSA_Info/MSA_Prefs/Prefs.txt (only changed keys) and becomes the new baseline. */
     public void savePrefs() throws IOException {
@@ -424,80 +505,4 @@ public final class Session implements AutoCloseable {
 
     /** The project's msa-info folder, or --msa-info ({@link msa.config.MsaInfo#locate}). */
     public static Path findMsaInfo(String option) { return msa.config.MsaInfo.locate(option); }
-
-    /**
-     * Demo source for trying the GUI without hardware. Spectrum analyser: a carrier drifting through
-     * 100-500 MHz with two harmonics, over noise, on a made-up ADC scale (about 328 counts per dB).
-     * Transmission: the tracking generator through a simulated cable (4 ns, a little loss) and the selected
-     * test component, read by a simulated phase detector that honours the PDM state (so the dead-zone
-     * inversion and the calibration can be tried).
-     */
-    static SimulatedTransport demo(MsaConfig cfg, Supplier<MsaMode> mode, Supplier<DemoDut> dut,
-                                   java.util.function.IntFunction<PathCalibration> cals) {
-        Random rnd = new Random(1);
-        Map<Integer, SynthPlanner> planners = new HashMap<>();
-        AtomicLong reads = new AtomicLong();
-        msa.sweep.PhaseDetector pd = msa.sweep.PhaseDetector.of(cfg);
-        SimulatedTransport.AdcModel model = st -> {
-            double f = ReplayTransport.tunedFrequency(st, cfg, planners);
-            if (mode.get().networkAnalyser() && !Double.isNaN(f)) {
-                double[] h = demoTransmission(f, dut.get());                // {dB, degrees}
-                double dbm = -10 + h[0] + rnd.nextGaussian() * 0.03;
-                int path = ReplayTransport.pathOf(st, cfg);
-                double finalFreq = cfg.filter(path).freqMHz();
-                double deg = h[1] + 30 + rnd.nextGaussian() * 0.05 + (st.pdmInverted ? 180 + pd.inversionDeviation(finalFreq) : 0);
-                PathCalibration cal = cals.apply(path);
-                long adc = cal != null ? adcFor(cal, dbm - cal.freqCorrection(f))
-                        : Math.round(10000 + 328 * (Math.max(dbm, -110) + 100));
-                long ph = Math.round(Math.floorMod(Math.round(deg * 1000), 360000) / 360000.0 * pd.maxPdmOut());
-                return new long[] {Math.max(0, Math.min(65535, adc)), ph};
-            }
-            double carrier = 300 + 200 * Math.sin(reads.incrementAndGet() / 20000.0);
-            double dbm = -110 + rnd.nextGaussian() * 1.5;
-            for (int h = 1; h <= 3; h++) {
-                double d = (f - h * carrier) / 1.5;
-                dbm = Math.max(dbm, -15 - 20 * (h - 1) - 6 * d * d);
-            }
-            long adc = Math.round(10000 + 328 * (dbm + 100));
-            return new long[] {Math.max(0, Math.min(65535, adc)), 32768};
-        };
-        SimulatedTransport t = new SimulatedTransport(model, 0x1024, 33, 0);
-        t.setDescription("demo signal");
-        return t;
-    }
-
-    /** Inverse of the magnitude table: the ADC reading that the calibration turns into this level. */
-    static long adcFor(PathCalibration cal, double dbm) {
-        PathCalibration.Table t = cal.magTable();
-        double[] x = t.x(), y = t.y();
-        if (dbm <= y[0]) return Math.round(x[0]);
-        for (int i = 1; i < x.length; i++)
-            if (dbm <= y[i]) return Math.round(x[i - 1] + (dbm - y[i - 1]) * (x[i] - x[i - 1]) / (y[i] - y[i - 1]));
-        return Math.round(x[x.length - 1]);
-    }
-
-    /** Demo fixture response at f MHz: 4 ns of cable with 0.5 dB + 0.2 dB/100 MHz loss, then the component. */
-    static double[] demoTransmission(double fMHz, DemoDut dut) {
-        double w = 2 * Math.PI * fMHz * 1e6;
-        double re = 1, im = 0;                                   // component S21 in a 50 ohm system
-        switch (dut) {
-            case THROUGH -> { }
-            case BANDPASS -> {                                    // series R 5, L 400 nH, C 1.583 pF
-                double x = w * 400e-9 - 1 / (w * 1.583e-12);
-                double dr = 105, di = x;                          // S21 = 100 / (100 + Z)
-                double den = dr * dr + di * di;
-                re = 100 * dr / den;
-                im = -100 * di / den;
-            }
-            case LOWPASS -> {                                     // shunt 30 pF: S21 = 1 / (1 + j w C 25)
-                double b = w * 30e-12 * 25;
-                double den = 1 + b * b;
-                re = 1 / den;
-                im = -b / den;
-            }
-        }
-        double db = 10 * Math.log10(re * re + im * im) - 0.5 - 0.002 * fMHz;
-        double deg = Math.toDegrees(Math.atan2(im, re)) - 360 * fMHz * 1e6 * 4e-9;
-        return new double[] {db, deg};
-    }
 }

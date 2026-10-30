@@ -49,6 +49,32 @@ public record VnaSettings(double planeExtNs, String s21JigAttach, double s21JigR
         return new VnaSettings(planeExtNs, attach, r0, shuntDelay, s11BridgeR0, s11GraphR0, s11JigType, calLevel, throughDelayNs);
     }
 
+    /** The fixture used in reflection: the bridge ("Reflect"), or the transmission fixture (series / shunt). */
+    public msa.vna.OslCal.Fixture reflectFixture() {
+        if (!"Trans".equalsIgnoreCase(s11JigType)) return msa.vna.OslCal.Fixture.BRIDGE;
+        return "Shunt".equalsIgnoreCase(s21JigAttach) ? msa.vna.OslCal.Fixture.SHUNT : msa.vna.OslCal.Fixture.SERIES;
+    }
+
+    /**
+     * [OSLDone]: the reflection fixture chosen in the calibration window. Like the BASIC program this sets both
+     * the bridge and the fixture R0, and for a series or shunt fixture also the transmission fixture.
+     */
+    public VnaSettings withReflectFixture(msa.vna.OslCal.Fixture f, double r0, double shuntDelayNs) {
+        String jigType = f == msa.vna.OslCal.Fixture.BRIDGE ? "Reflect" : "Trans";
+        String attach = switch (f) {
+            case BRIDGE -> s21JigAttach;
+            case SERIES -> "Series";
+            case SHUNT -> "Shunt";
+        };
+        double delay = f == msa.vna.OslCal.Fixture.SHUNT ? shuntDelayNs : s21ShuntDelay;
+        return new VnaSettings(planeExtNs, attach, r0, delay, r0, s11GraphR0, jigType, calLevel, throughDelayNs);
+    }
+
+    /** Sweep window "R0": the impedance the reflection graphs refer to. */
+    public VnaSettings withGraphR0(double r0) {
+        return new VnaSettings(planeExtNs, s21JigAttach, s21JigR0, s21ShuntDelay, s11BridgeR0, r0, s11JigType, calLevel, throughDelayNs);
+    }
+
     public VnaSettings withS11Bridge(double bridgeR0, double graphR0, String jigType) {
         return new VnaSettings(planeExtNs, s21JigAttach, s21JigR0, s21ShuntDelay, bridgeR0, graphR0, jigType, calLevel, throughDelayNs);
     }

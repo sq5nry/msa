@@ -41,7 +41,8 @@ public final class DataFile {
     /**
      * Spectrum analyser: step, frequency, power, ADC. Transmission: also S21 in dB (referenced to the
      * calibration) and, in vector transmission, S21 phase (referenced, with plane extension), the phase as
-     * measured, the phase ADC and the PDM state.
+     * measured, the phase ADC and the PDM state. Reflection: S11 (calibrated, re the graph R0), the series
+     * impedance, then the raw readings.
      */
     public static void write(Writer w, SweepData d, List<String> header, MsaMode mode) throws IOException {
         String nl = System.lineSeparator();
@@ -49,6 +50,7 @@ public final class DataFile {
         switch (mode) {
             case SA -> w.write("! Step, Freq(MHz), Mag(dBm), ADC" + nl);
             case SCALAR_TRANS -> w.write("! Step, Freq(MHz), S21(dB), Mag(dBm), ADC" + nl);
+            case REFLECTION -> w.write("! Step, Freq(MHz), S11(dB), S11(deg), Rs(ohm), Xs(ohm), Mag(dBm), Phase(deg), ADC, PhaseADC, PDM" + nl);
             default -> w.write("! Step, Freq(MHz), S21(dB), S21(deg), Mag(dBm), Phase(deg), ADC, PhaseADC, PDM" + nl);
         }
         for (int i = 0; i < d.size(); i++) {
@@ -57,6 +59,12 @@ public final class DataFile {
                 case SA -> w.write(String.format(Locale.ROOT, "%d, %.6f, %.5f, %d%n", i, d.frequency(i), d.dBm(i), d.adc(i)));
                 case SCALAR_TRANS -> w.write(String.format(Locale.ROOT, "%d, %.6f, %.5f, %.5f, %d%n", i, d.frequency(i),
                         d.s21Db(i), d.dBm(i), d.adc(i)));
+                case REFLECTION -> {
+                    msa.vna.ReflectionValues r = d.reflection(i);
+                    w.write(String.format(Locale.ROOT, "%d, %.6f, %.5f, %.2f, %.6g, %.6g, %.5f, %.2f, %d, %d, %d%n", i,
+                            d.frequency(i), r.s11Db(), r.s11Deg(), r.rs(), r.xs(), d.dBm(i), d.phase(i), d.adc(i),
+                            d.phaseAdc(i), d.pdm(i)));
+                }
                 default -> w.write(String.format(Locale.ROOT, "%d, %.6f, %.5f, %.2f, %.5f, %.2f, %d, %d, %d%n", i, d.frequency(i),
                         d.s21Db(i), d.s21Deg(i), d.dBm(i), d.phase(i), d.adc(i), d.phaseAdc(i), d.pdm(i)));
             }

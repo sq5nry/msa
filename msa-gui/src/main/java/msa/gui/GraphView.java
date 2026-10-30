@@ -510,9 +510,11 @@ public final class GraphView extends Region {
         switch (s.mode()) {
             case SA -> lines.add(tg ? "SA with TG" : "Spect. Analyzer");
             default -> {
-                lines.add(s.mode() == msa.sweep.MsaMode.VECTOR_TRANS ? "VNA Transmission" : "SNA Transmission");
-                msa.vna.TransmissionCal.Level applied = session.installedCal(s).level();
-                calDowngraded = applied.ordinal() < session.vna().calLevel().ordinal();
+                lines.add(s.mode() == msa.sweep.MsaMode.REFLECTION ? "VNA Reflection"
+                        : s.mode() == msa.sweep.MsaMode.VECTOR_TRANS ? "VNA Transmission" : "SNA Transmission");
+                msa.vna.TransmissionCal.Level applied = session.appliedCalLevel(s);
+                calDowngraded = applied.ordinal() < session.vna().calLevel().ordinal()
+                        || (s.mode() == msa.sweep.MsaMode.REFLECTION && applied == msa.vna.TransmissionCal.Level.NONE);
                 calLine = "Cal=" + switch (applied) { case NONE -> "None"; case BASE -> "Base"; case BAND -> "Band"; };
                 lines.add(calLine);
             }
@@ -540,6 +542,7 @@ public final class GraphView extends Region {
             }
         }
         if (s.mode().readsPhase()) lines.add("Exten=" + fmtPlain(session.vna().planeExtNs()) + " ns");
+        if (s.mode() == msa.sweep.MsaMode.REFLECTION) lines.add("Z0=" + fmtPlain(session.vna().s11GraphR0()));
         if (s.mode().networkAnalyser()) lines.add(">DUT");
         String math = state.referenceSpec().mathLabel();
         if (!math.isEmpty()) lines.add(math);

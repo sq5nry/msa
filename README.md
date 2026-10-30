@@ -170,6 +170,80 @@ a base calibration is not limited to 2,000 steps; after a calibration sweep the 
 200 MHz band-pass, 30 pF low-pass) with a phase detector that honours the PDM, so the calibration and the
 dead-zone handling can be tried without the MSA.
 
+## VNA reflection
+
+Mode > **VNA Reflection** (or **VNA Refl** in the sweep panel; needs `hasVNA=1`). The TG drives a reflection
+bridge (or a series/shunt fixture) whose output goes to the MSA input; the device is on the bridge's test port.
+The graph starts with S11 dB on Y2 and S11 phase on Y1. Graph data (axis window): S11 magnitude and phase, rho
+and theta, |Z| and its angle, series Rs, Xs, Cs, Ls, parallel Rp, Xp, Cp, Lp, return loss, reflected power,
+component Q and VSWR (CalcReflectDerivedData). **R0** in the sweep panel is the impedance the graphs refer to
+(S11GraphR0); it may differ from the bridge R0, the data are transformed (ApplyExtensionAndTransformR0). The
+plane extension counts twice (round trip) and is not used with a series fixture.
+
+**Operating Cal > Perform Cal** opens the reflection calibration ([PerformOSLCal], ProcessOSLCal, CalcOSLCoeff):
+* **Full OSL**: attach the Open, Short and Load in turn and click their Perform buttons (each takes one complete
+  sweep), then Done. The error model is S = (M - b) / (a - c M) per step, M being the reading minus the
+  reference (the standard that reads highest). The standards need not be ideal: pick a set from
+  `MSA_Info/OperatingCal/CalSets` or choose **Custom** and type RLC specifications, e.g. the load measured at
+  48.68 ohms as `RLC[P, R48.68, C0]`; **Save Set As...** keeps them as a set file. `Load4868.txt` (ideal open and
+  short, 48.68 ohm load) is included.
+* **Reference Cal**: one standard, the others taken as ideal: Open or Short on a bridge, Short in a series
+  fixture, Open in a shunt fixture (with the connection delay).
+* Reference To, Update Cal (re-measures the reference standard) and Save Band As Base work as in transmission.
+  Unlike BASIC, which keeps the base OSL calibration in memory only, it is also saved in
+  `MSA_Info/OperatingCal/BaseOSLCal.txt` (a msa-java format).
+
+`--demo` simulates a bridge with -35 dB directivity, source mismatch and 3 ns of cable; Mode > Demo Test Fixture
+offers the open, short, the 48.68 ohm load, a series RLC resonant at 200 MHz and 75 ohms with 10 nH.
+
+Not ported yet: the Smith chart, the reflection analysis tools (RLC, S11 to S21), the S11 data window, coax
+specifications in the standards (`Coax[...]`).
+
+## Autotest
+
+Setup > Autotest runs self tests the MSA can do on itself, on request, with only two kinds of wiring: nothing
+connected to the input, and the tracking generator looped to the input with a short cable. The run asks for
+the wiring before the first test and whenever it changes ("Skip these tests" skips that group). The tests drive
+the main window's sweep engine, so the main graph shows what is being measured; the main window is blocked
+while the Autotest window is open, and the user's sweep and markers are restored afterwards.
+
+| Test | Wiring | What it checks |
+|---|---|---|
+| Zero-frequency sweep | none | Each filter path centred at 0 Hz, span 10 x RBW (the documentation's health test): peak level, centre offset (config.txt filter frequency), -3 dB bandwidth against config.txt, skirt rejection, the shape inside a filter mask (>= -3 dB within +-0.3 RBW, <= -20 dB beyond +-2.5 RBW) and against the reference; level spread between paths |
+| A-to-D converters alive | none | Magnitude ADC neither stuck nor at full scale, shows noise; phase ADC moves (VNA) |
+| Noise floor | none | Median level 100-110 MHz on the narrowest and widest paths |
+| USB and ADC speed | none | Time per point at zero span, 1 and 16 samples |
+| Spur scan (off by default, ~1 min) | none | Responses above the floor from 1 to 1000 MHz |
+| TG output and range | TG loop | Mean level, ripple 1-1000 MHz (Frequency Range Test), highest frequency within 3 dB |
+| Path calibrations agree | TG loop | The same signal read through every path |
+| Video filters | TG loop | Level and phase the same with each video filter |
+| Short-term stability | TG loop | Spread of 100 readings, magnitude and phase |
+| Phase linearity (VNA) | TG loop | Delay of the loop, deviation from a straight line (loose limits: an input switch's amplifier adds its own curve), the curve against the reference, steps where the PDM inverts |
+| PDM inversion angle (VNA) | TG loop | Measures the inversion angle and compares it with config.txt invdeg (not saved) |
+| Input switch isolation, T to R (switch) | TG loop | TG on T, read with the T/R line on T (transmission) and on R (reflection): isolation, and that the line reaches the switch |
+| Reflection (R) input path (switch) | TG to R | Level and flatness through the R input in reflection mode, curve against the reference |
+| Input switch isolation, R to T (switch) | TG to R | As above, the other way round |
+| Phase linearity of the R path (switch) | TG to R | The phase test in reflection mode, through the R input |
+
+With an SA/VNA input switch (Wetterlin's MSA Input Switch), set it to SA for the "nothing connected" tests,
+and to VNA with the TG on the transmission (T) input for the TG tests (the run asks before each group). The
+switch's amplifier and attenuators are then part of the loop, so its levels and phase curve are this MSA's own:
+save a reference and judge later runs against it. Tick "MSA has an SA/VNA input switch" in the Autotest window
+(remembered in MSA_Info/Autotest/autotest.properties) to add the switch tests; they need the TG moved to the R
+input once. The T/R selection follows the mode (transmit/reflect latch bit); the SA/VNA position is still set by
+hand, which the prompts ask for.
+
+Each value is judged PASS / WARN / FAIL against design limits; INFO values are reported only. Hovering a test
+shows what it checks; a result shows its values, curves (with limit and reference curves) and hints on where to
+look when something fails, taken from the construction and verification chapters of the documentation.
+
+**Reference.** Healthy MSAs differ from the design values by several dB but repeat well, so once the unit checks
+out, Save as Reference keeps the values and curves in `MSA_Info/Autotest` (`reference.properties`,
+`trace-*.csv`). Later runs show the reference beside each value and turn a value that moved beyond a set
+tolerance into at least a WARN. Save Report writes the results as text.
+
+`--demo` runs the whole set (the Spur Scan finds the demo's carriers, as it should).
+
 ## Windows application (portable, no Java needed)
 
 ```

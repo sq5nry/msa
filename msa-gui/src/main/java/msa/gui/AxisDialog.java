@@ -76,7 +76,13 @@ public final class AxisDialog extends Dialog<AxisDialog.Result> {
             GraphData ng = DATA.get(Math.max(0, data.getSelectionModel().getSelectedIndex()));
             if (ng == GraphData.NONE) auto.setSelected(false);
             if (ng != GraphData.NONE && ng != shownData) {
-                AxisRange r = AxisScale.startingLimits(ng, range);
+                AxisRange cur = range;
+                try {
+                    cur = new AxisRange(Double.parseDouble(bot.getText().strip()), Double.parseDouble(top.getText().strip()));
+                } catch (NumberFormatException ignored) {
+                    // keep the axis range
+                }
+                AxisRange r = AxisScale.startingLimits(ng, shownData, cur);
                 top.setText(plain(r.max()));
                 bot.setText(plain(r.min()));
             }

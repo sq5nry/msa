@@ -122,10 +122,6 @@ public record MsaSettings(SweepSettings sweep, DisplaySettings display, boolean 
             warn.add("msaMode=" + modeText + " needs the VNA phase detector (config.txt hasVNA): spectrum analyser");
             mode = MsaMode.SA;
         }
-        if (mode == MsaMode.REFLECTION) {
-            warn.add("VNA Reflection is not ported yet: loaded as VNA Transmission");
-            mode = MsaMode.VECTOR_TRANS;
-        }
         if (num(sw, "BaseFreq", 0, warn) != 0) warn.add("BaseFreq (frequency offset) is not supported yet: ignored");
 
         // ---- hardware

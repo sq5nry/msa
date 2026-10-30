@@ -26,11 +26,24 @@ public final class SweepData {
      * @param db         reference magnitude per point, subtracted from the power; null = no reference
      * @param deg        reference phase per point, subtracted from the phase; null = no reference
      * @param planeExtNs reference plane extension in ns (Sweep window "Plane Extension"); phase is advanced
-     *                   by 360 * f * t
+     *                   by 360 * f * t (twice that in reflection)
+     * @param reflection the reflection mode's calibration and impedances, or null outside reflection
      */
-    public record Correction(double[] db, double[] deg, double planeExtNs) {
-        public static final Correction NONE = new Correction(null, null, 0);
+    public record Correction(double[] db, double[] deg, double planeExtNs, Reflection reflection) {
+        public static final Correction NONE = new Correction(null, null, 0, null);
+
+        public Correction(double[] db, double[] deg, double planeExtNs) { this(db, deg, planeExtNs, null); }
     }
+
+    /**
+     * How reflection readings become S11 (ConvertRawDataToReflection, ApplyExtensionAndTransformR0).
+     *
+     * @param cal          the OSL calibration at each point, or null (raw readings taken as S11)
+     * @param bridgeR0     reference resistance of the bridge or fixture (and of the calibration)
+     * @param graphR0      impedance the graphs are referenced to
+     * @param extendPlane  false for a series fixture, where a plane extension makes no sense
+     */
+    public record Reflection(msa.vna.OslCal.Point[] cal, double bridgeR0, double graphR0, boolean extendPlane) {}
 
     private final int number;
     private final double[] freq;
@@ -127,6 +140,9 @@ public final class SweepData {
         if ((c.db() != null && c.db().length != size()) || (c.deg() != null && c.deg().length != size()))
             throw new IllegalArgumentException("correction has " + (c.db() != null ? c.db().length : c.deg().length)
                     + " points, the sweep " + size());
+        if (c.reflection() != null && c.reflection().cal() != null && c.reflection().cal().length != size())
+            throw new IllegalArgumentException("reflection calibration has " + c.reflection().cal().length
+                    + " points, the sweep " + size());
         correction = c;
     }
 
@@ -185,8 +201,43 @@ public final class SweepData {
         return df == 0 ? Double.NaN : -cycles / df;
     }
 
+    /**
+     * Reflection: S11 re the graph R0 at a step. The reference reading is subtracted and the OSL calibration
+     * applied (magnitude limited to 1), the plane extended by twice the delay, and the result transformed from
+     * the bridge R0 to the graph R0. Without a calibration the raw reading is taken as S11.
+     */
+    public msa.vna.Cx s11(int i) {
+        double db = dBm[i], deg = phase[i];
+        if (Double.isNaN(db) || Double.isNaN(deg)) return new msa.vna.Cx(Double.NaN, Double.NaN);
+        Reflection r = correction.reflection();
+        double bridgeR0 = r == null ? 50 : r.bridgeR0(), graphR0 = r == null ? 50 : r.graphR0();
+        if (r != null && r.cal() != null) {
+            msa.vna.Cx s = r.cal()[i].correct(db, deg);
+            db = Math.min(0, s.db());
+            deg = s.deg();
+        }
+        double t = correction.planeExtNs();
+        if (t != 0 && (r == null || r.extendPlane())) deg += 2 * 360 * 0.001 * t * freq[i];
+        if (bridgeR0 != graphR0) {
+            msa.vna.Cx z = msa.vna.Impedance.fromRefco(bridgeR0, msa.vna.Cx.polar(Math.pow(10, Math.min(0, db) / 20), deg));
+            msa.vna.Cx g = msa.vna.Impedance.toRefco(graphR0, z);
+            return g;
+        }
+        return msa.vna.Cx.polar(Math.pow(10, db / 20), PhaseDetector.normalise(deg));
+    }
+
+    /** All reflection values at a step (CalcReflectDerivedData). */
+    public msa.vna.ReflectionValues reflection(int i) {
+        Reflection r = correction.reflection();
+        return msa.vna.ReflectionValues.of(s11(i), freq[i], r == null ? 50 : r.graphR0());
+    }
+
     /** Graph value at a whole step. */
     public double value(GraphData g, int i) {
+        if (g.reflection()) {
+            if (Double.isNaN(dBm[i]) || Double.isNaN(phase[i])) return Double.NaN;
+            return reflection(i).value(g);
+        }
         return switch (g) {
             case DBM, WATTS, VOLTS, NONE -> g.fromDbm(dBm[i]);
             case DB -> s21Db(i);
@@ -195,6 +246,7 @@ public final class SweepData {
             case ANGLE -> s21Deg(i);
             case RAW_ANGLE -> rawDeg(i);
             case GROUP_DELAY -> groupDelay(i);
+            default -> Double.NaN;
         };
     }
 

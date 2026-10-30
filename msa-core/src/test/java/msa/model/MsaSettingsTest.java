@@ -125,7 +125,7 @@ class MsaSettingsTest {
         assertEquals(SweepSettings.Scale.LOG, s.scale());
         assertEquals(new SynthPlanner.Tracking(0, true), s.generator(), "NormRev=1 is reverse tracking");
         String all = String.join("\n", l.warnings());
-        for (String w : Arrays.asList("Reflection", "Path=9", "VideoFilter=Foo", "NumSteps=abc", "BaseFreq"))
+        for (String w : Arrays.asList("Path=9", "VideoFilter=Foo", "NumSteps=abc", "BaseFreq"))
             assertTrue(all.contains(w), "warning about " + w + " in:\n" + all);
     }
 
@@ -180,8 +180,8 @@ class MsaSettingsTest {
         assertEquals(17, l.settings().display().y2Data());
         assertEquals(2, l.warnings().size(), l.warnings().toString());
         MsaSettings.Loaded r = withSweepKeys("msaMode", "Reflection");
-        assertEquals(msa.sweep.MsaMode.VECTOR_TRANS, r.settings().sweep().mode());
-        assertTrue(r.warnings().get(0).contains("not ported"));
+        assertEquals(cfg().hasVna() ? msa.sweep.MsaMode.REFLECTION : msa.sweep.MsaMode.SA, r.settings().sweep().mode());
+        assertTrue(r.warnings().stream().noneMatch(w -> w.contains("not ported")), r.warnings().toString());
     }
 
     @Test

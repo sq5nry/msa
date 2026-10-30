@@ -178,7 +178,6 @@ public record SessionState(MsaSettings settings, double sgoutMHz, double tgOffse
         rev = r.bool("gen.reverse", rev);
         boolean tracking = r.bool("gen.tracking", bs.generator() instanceof SynthPlanner.Tracking);
         MsaMode mode = r.enumeration("hw.mode", MsaMode.class, bs.mode());
-        if (mode == MsaMode.REFLECTION) mode = MsaMode.VECTOR_TRANS;                  // not ported yet
         if ((mode != MsaMode.SA && !hasTg) || (mode.readsPhase() && !hasVna)) {
             r.warn.add("hw.mode=" + mode + " (not available on this hardware)");
             mode = MsaMode.SA;
